@@ -1,0 +1,6 @@
+{
+  "name": "PulseFX - Forex & Currency Trading Signals",
+  "description": "Real-time technical analysis terminal and buy/sell signals for Forex and global currency pairs starting from 1-hour timeframes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
