@@ -530,7 +530,12 @@ export function calculateCurrencyStrengthMatrix(pairs: MarketPair[]): CurrencySt
 /**
  * Simulates historical signal backtest results over past candles
  */
-export function simulateBacktest(pair: MarketPair, candles: Candle[], timeframe: Timeframe): BacktestSummary {
+export function simulateBacktest(
+  pair: MarketPair,
+  candles: Candle[],
+  timeframe: Timeframe,
+  sensitivity: import('../types/market').SignalSensitivity = 'fast'
+): BacktestSummary {
   const trades: HistoricalTrade[] = [];
   const evalWindow = Math.min(candles.length - 25, 40);
   const pipFactor = pair.pipFactor;
@@ -545,7 +550,7 @@ export function simulateBacktest(pair: MarketPair, candles: Candle[], timeframe:
 
   for (let i = 25; i < 25 + evalWindow; i += 3) {
     const candleSlice = candles.slice(0, i);
-    const signalData = generateTradingSignal(pair, candleSlice, timeframe);
+    const signalData = generateTradingSignal(pair, candleSlice, timeframe, sensitivity);
 
     if (signalData.signal === 'NEUTRAL') continue;
 
@@ -637,4 +642,75 @@ export function simulateBacktest(pair: MarketPair, candles: Candle[], timeframe:
     avgLossPips: losses > 0 ? Math.round(totalLossPips / losses) : 22,
     trades: trades.reverse(),
   };
+}
+
+/**
+ * Attempts to fetch live real-world exchange rates from open public FX and Crypto endpoints
+ */
+export async function fetchLiveExchangeRates(currentPairs: MarketPair[]): Promise<MarketPair[]> {
+  try {
+    const fxPromise = fetch('https://open.er-api.com/v6/latest/USD')
+      .then(res => res.ok ? res.json() : null)
+      .catch(() => null);
+
+    const cryptoPromise = fetch('https://api.binance.com/api/v3/ticker/price')
+      .then(res => res.ok ? res.json() : null)
+      .catch(() => null);
+
+    const [fxData, cryptoData] = await Promise.all([fxPromise, cryptoPromise]);
+
+    const updated = currentPairs.map(p => {
+      let realPrice: number | null = null;
+
+      // Check Forex
+      if (fxData && fxData.rates) {
+        const rates = fxData.rates;
+        if (p.base === 'USD' && rates[p.quote]) {
+          realPrice = rates[p.quote];
+        } else if (p.quote === 'USD' && rates[p.base]) {
+          realPrice = 1 / rates[p.base];
+        } else if (rates[p.base] && rates[p.quote]) {
+          // Cross rate
+          realPrice = rates[p.quote] / rates[p.base];
+        }
+      }
+
+      // Check Crypto
+      if (cryptoData && Array.isArray(cryptoData)) {
+        if (p.id === 'BTCUSD') {
+          const item = cryptoData.find((c: any) => c.symbol === 'BTCUSDT');
+          if (item) realPrice = parseFloat(item.price);
+        } else if (p.id === 'ETHUSD') {
+          const item = cryptoData.find((c: any) => c.symbol === 'ETHUSDT');
+          if (item) realPrice = parseFloat(item.price);
+        } else if (p.id === 'SOLUSD') {
+          const item = cryptoData.find((c: any) => c.symbol === 'SOLUSDT');
+          if (item) realPrice = parseFloat(item.price);
+        } else if (p.id === 'XRPUSD') {
+          const item = cryptoData.find((c: any) => c.symbol === 'XRPUSDT');
+          if (item) realPrice = parseFloat(item.price);
+        }
+      }
+
+      if (realPrice && !isNaN(realPrice) && realPrice > 0) {
+        const current = Number(realPrice.toFixed(p.decimals));
+        const delta = current - p.basePrice;
+        const changePercent = Number(((delta / p.basePrice) * 100).toFixed(2));
+        return {
+          ...p,
+          currentPrice: current,
+          high24h: Math.max(p.high24h, current),
+          low24h: Math.min(p.low24h, current),
+          change24h: delta,
+          change24hPercent: changePercent,
+        };
+      }
+
+      return p;
+    });
+
+    return updated;
+  } catch (err) {
+    return currentPairs;
+  }
 }

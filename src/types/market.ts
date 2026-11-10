@@ -4,6 +4,10 @@ export type AssetCategory = 'forex-major' | 'forex-minor' | 'exotic' | 'crypto';
 
 export type SignalType = 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
 
+export type SignalSensitivity = 'fast' | 'balanced' | 'conservative';
+
+export type StreamSpeed = 'ultra' | 'fast' | 'standard'; // ultra = 300ms, fast = 800ms, standard = 1800ms
+
 export interface MarketPair {
   id: string;
   symbol: string;
@@ -96,6 +100,10 @@ export interface TradingSignal {
   neutralIndicatorsCount: number;
   reasons: string[];
   indicatorDetails: IndicatorSignalDetail[];
+  signalVelocity?: number;
+  isLiveBarTrigger?: boolean;
+  earlyWarningText?: string;
+  sensitivity?: SignalSensitivity;
 }
 
 export interface CurrencyStrength {

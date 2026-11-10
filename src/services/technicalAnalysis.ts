@@ -1,4 +1,4 @@
-import { Candle, IndicatorValues, TradingSignal, SignalType, Timeframe, IndicatorSignalDetail, MarketPair } from '../types/market';
+import { Candle, IndicatorValues, TradingSignal, SignalType, Timeframe, IndicatorSignalDetail, MarketPair, SignalSensitivity } from '../types/market';
 
 /**
  * Calculates Simple Moving Average
@@ -294,18 +294,65 @@ export function calculatePivotPoints(lastCandle: Candle) {
 }
 
 /**
- * Extracts latest indicator snapshot for a given series
+ * Extracts latest indicator snapshot for a given series with selectable sensitivity
  */
-export function getLatestIndicators(candles: Candle[]): IndicatorValues {
+export function getLatestIndicators(
+  candles: Candle[],
+  sensitivity: SignalSensitivity = 'fast'
+): IndicatorValues {
   const closes = candles.map(c => c.close);
-  const ema20Series = calculateEMA(closes, 20);
-  const ema50Series = calculateEMA(closes, 50);
-  const ema200Series = calculateEMA(closes, Math.min(200, Math.floor(closes.length * 0.8)));
-  const rsiSeries = calculateRSI(closes, 14);
-  const macdSeries = calculateMACD(closes);
-  const bbSeries = calculateBollingerBands(closes, 20, 2);
-  const stSeries = calculateSupertrend(candles, 10, 3);
-  const stochSeries = calculateStochastic(candles, 14, 3);
+
+  // Dynamic period configuration based on sensitivity
+  let emaShortP = 20;
+  let emaMedP = 50;
+  let emaLongP = 200;
+  let rsiP = 14;
+  let macdFast = 12;
+  let macdSlow = 26;
+  let macdSig = 9;
+  let stPeriod = 10;
+  let stMult = 3;
+  let stochK = 14;
+  let bbP = 20;
+  let bbMult = 2;
+
+  if (sensitivity === 'fast') {
+    // Ultra-responsive momentum periods
+    emaShortP = 9;
+    emaMedP = 21;
+    emaLongP = Math.min(55, Math.floor(closes.length * 0.7));
+    rsiP = 9;
+    macdFast = 6;
+    macdSlow = 13;
+    macdSig = 5;
+    stPeriod = 7;
+    stMult = 2.0;
+    stochK = 8;
+    bbP = 14;
+    bbMult = 1.8;
+  } else if (sensitivity === 'conservative') {
+    emaShortP = 50;
+    emaMedP = 100;
+    emaLongP = Math.min(200, Math.floor(closes.length * 0.85));
+    rsiP = 14;
+    macdFast = 12;
+    macdSlow = 26;
+    macdSig = 9;
+    stPeriod = 14;
+    stMult = 3.2;
+    stochK = 14;
+    bbP = 20;
+    bbMult = 2.2;
+  }
+
+  const ema20Series = calculateEMA(closes, emaShortP);
+  const ema50Series = calculateEMA(closes, emaMedP);
+  const ema200Series = calculateEMA(closes, emaLongP);
+  const rsiSeries = calculateRSI(closes, rsiP);
+  const macdSeries = calculateMACD(closes, macdFast, macdSlow, macdSig);
+  const bbSeries = calculateBollingerBands(closes, bbP, bbMult);
+  const stSeries = calculateSupertrend(candles, stPeriod, stMult);
+  const stochSeries = calculateStochastic(candles, stochK, 3);
   const atrSeries = calculateATR(candles, 14);
 
   const lastIndex = candles.length - 1;
@@ -347,10 +394,11 @@ export function getLatestIndicators(candles: Candle[]): IndicatorValues {
 export function generateTradingSignal(
   pair: MarketPair,
   candles: Candle[],
-  timeframe: Timeframe
+  timeframe: Timeframe,
+  sensitivity: SignalSensitivity = 'fast'
 ): TradingSignal {
   const currentPrice = pair.currentPrice;
-  const indicators = getLatestIndicators(candles);
+  const indicators = getLatestIndicators(candles, sensitivity);
   const details: IndicatorSignalDetail[] = [];
   const reasons: string[] = [];
 
@@ -358,6 +406,39 @@ export function generateTradingSignal(
   let bullishCount = 0;
   let bearishCount = 0;
   let neutralCount = 0;
+
+  // Live Bar Early Micro-Momentum Check (triggers instantly on intra-bar breakout)
+  let isLiveBarTrigger = false;
+  let earlyWarningText = '';
+  if (candles.length >= 5) {
+    const last = candles[candles.length - 1];
+    const prev3 = candles.slice(-4, -1);
+    const prevHighMax = Math.max(...prev3.map(c => c.high));
+    const prevLowMin = Math.min(...prev3.map(c => c.low));
+
+    if (last.close > prevHighMax) {
+      isLiveBarTrigger = true;
+      earlyWarningText = '⚡ Live Tick High Breakout (Immediate Bullish Flow)';
+      score += 15;
+      bullishCount++;
+      reasons.unshift(earlyWarningText);
+    } else if (last.close < prevLowMin) {
+      isLiveBarTrigger = true;
+      earlyWarningText = '⚡ Live Tick Low Breakdown (Immediate Bearish Flow)';
+      score -= 15;
+      bearishCount++;
+      reasons.unshift(earlyWarningText);
+    }
+  }
+
+  // Calculate Signal Velocity (micro-acceleration of score)
+  let signalVelocity = 0;
+  if (candles.length > 5) {
+    const prevSlice = candles.slice(0, -1);
+    const prevIndicators = getLatestIndicators(prevSlice, sensitivity);
+    const rsiDelta = indicators.rsi - prevIndicators.rsi;
+    signalVelocity = Number((rsiDelta * 2.2).toFixed(1));
+  }
 
   // 1. Moving Averages (EMA 20, 50, 200) - Weight: 25 pts
   let maScore = 0;
@@ -580,17 +661,30 @@ export function generateTradingSignal(
   // Bound score between -100 and +100
   score = Math.max(-100, Math.min(100, Math.round(score)));
 
-  // Final Consensus Signal Classification
+  // Final Consensus Signal Classification based on Sensitivity Mode
+  let buyThreshold = 22;
+  let strongBuyThreshold = 50;
+
+  if (sensitivity === 'fast') {
+    // Ultra-Fast / Scalp: triggers early on momentum shifts without lagging
+    buyThreshold = 18;
+    strongBuyThreshold = 45;
+  } else if (sensitivity === 'conservative') {
+    // Heavy confirmation
+    buyThreshold = 40;
+    strongBuyThreshold = 70;
+  }
+
   let finalSignal: SignalType = 'NEUTRAL';
   let confidence = Math.abs(score);
 
-  if (score >= 45) {
-    finalSignal = score >= 70 ? 'STRONG_BUY' : 'BUY';
-  } else if (score <= -45) {
-    finalSignal = score <= -70 ? 'STRONG_SELL' : 'SELL';
+  if (score >= buyThreshold) {
+    finalSignal = score >= strongBuyThreshold ? 'STRONG_BUY' : 'BUY';
+  } else if (score <= -buyThreshold) {
+    finalSignal = score <= -strongBuyThreshold ? 'STRONG_SELL' : 'SELL';
   } else {
     finalSignal = 'NEUTRAL';
-    confidence = Math.max(20, 100 - Math.abs(score) * 2);
+    confidence = Math.max(25, 100 - Math.abs(score) * 2.2);
   }
 
   // Calculate dynamic Entry, Stop Loss, and Take Profit levels based on ATR
@@ -652,5 +746,9 @@ export function generateTradingSignal(
     neutralIndicatorsCount: neutralCount,
     reasons: reasons.slice(0, 4),
     indicatorDetails: details,
+    signalVelocity,
+    isLiveBarTrigger,
+    earlyWarningText,
+    sensitivity,
   };
 }
